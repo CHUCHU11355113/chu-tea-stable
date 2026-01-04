@@ -1,0 +1,108 @@
+import "dotenv/config";
+import express from "express";
+import { createServer } from "http";
+import net from "net";
+import { createExpressMiddleware } from "@trpc/server/adapters/express";
+import { registerOAuthRoutes } from "./oauth";
+import { appRouter } from "../routers";
+import { createContext } from "./context";
+import { serveStatic, setupVite } from "./vite";
+import { handleTelegramWebhook } from "../telegram";
+import { startScheduler } from "../iiko-scheduler.js";
+import { CronScheduler } from "../cronScheduler.js";
+import { handleWebhookNotification } from "../yookassa";
+import { initConfigCache } from "../services/configService";
+
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise(resolve => {
+    const server = net.createServer();
+    server.listen(port, () => {
+      server.close(() => resolve(true));
+    });
+    server.on("error", () => resolve(false));
+  });
+}
+
+async function findAvailablePort(startPort: number = 3000): Promise<number> {
+  for (let port = startPort; port < startPort + 20; port++) {
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+  throw new Error(`No available port found starting from ${startPort}`);
+}
+
+async function startServer() {
+  // 初始化配置缓存
+  await initConfigCache();
+  console.log('[Server] Config cache initialized');
+  
+  const app = express();
+  const server = createServer(app);
+  // Configure body parser with larger size limit for file uploads
+  app.use(express.json({ limit: "50mb" }));
+  app.use(express.urlencoded({ limit: "50mb", extended: true }));
+  // OAuth callback under /api/oauth/callback
+  registerOAuthRoutes(app);
+  
+  // Telegram Webhook
+  app.post("/api/telegram/webhook", async (req, res) => {
+    try {
+      console.log('[Telegram Webhook] Received:', JSON.stringify(req.body, null, 2));
+      const result = await handleTelegramWebhook(req.body);
+      console.log('[Telegram Webhook] Result:', result);
+      res.json(result);
+    } catch (error) {
+      console.error('[Telegram Webhook] Error:', error);
+      res.status(500).json({ success: false, message: 'Internal error' });
+    }
+  });
+
+  // YooKassa Webhook
+  app.post("/api/yookassa/webhook", async (req, res) => {
+    try {
+      console.log('[YooKassa Webhook] Received:', JSON.stringify(req.body, null, 2));
+      const result = await handleWebhookNotification(req.body);
+      console.log('[YooKassa Webhook] Result:', result);
+      res.json({ success: true });
+    } catch (error) {
+      console.error('[YooKassa Webhook] Error:', error);
+      res.status(500).json({ success: false, message: 'Internal error' });
+    }
+  });
+  // tRPC API
+  app.use(
+    "/api/trpc",
+    createExpressMiddleware({
+      router: appRouter,
+      createContext,
+    })
+  );
+  // development mode uses Vite, production mode uses static files
+  if (process.env.NODE_ENV === "development") {
+    await setupVite(app, server);
+  } else {
+    serveStatic(app);
+  }
+
+  const preferredPort = parseInt(process.env.PORT || "3000");
+  const port = await findAvailablePort(preferredPort);
+
+  if (port !== preferredPort) {
+    console.log(`Port ${preferredPort} is busy, using port ${port} instead`);
+  }
+
+  server.listen(port, () => {
+    console.log(`Server running on port ${port}`);
+    
+    // 启动 IIKO 订单同步调度器
+    startScheduler();
+    
+    // 启动营销自动化定时任务调度器
+    const cronScheduler = CronScheduler.getInstance();
+    cronScheduler.start();
+    console.log('[CronScheduler] Marketing automation scheduler started');
+  });
+}
+
+startServer().catch(console.error);

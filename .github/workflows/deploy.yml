@@ -1,0 +1,274 @@
+# Chu Tea 生产环境部署工作流
+# 此文件应放置在 chu-tea-stable 仓库的 .github/workflows/deploy.yml
+#
+# 触发条件：推送到 main 分支
+# 功能：构建项目并通过蓝绿部署方式部署到生产服务器
+
+name: 🚀 Deploy to Production
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:  # 允许手动触发
+
+env:
+  NODE_VERSION: '18'
+  PNPM_VERSION: '8'
+
+jobs:
+  build-and-deploy:
+    name: Build and Deploy
+    runs-on: ubuntu-latest
+    
+    steps:
+      # ============================================
+      # 步骤 1: 检出代码
+      # ============================================
+      - name: 📥 Checkout code
+        uses: actions/checkout@v4
+
+      # ============================================
+      # 步骤 2: 设置 Node.js 环境
+      # ============================================
+      - name: 📦 Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+
+      # ============================================
+      # 步骤 3: 设置 pnpm
+      # ============================================
+      - name: 📦 Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: ${{ env.PNPM_VERSION }}
+
+      # ============================================
+      # 步骤 4: 获取 pnpm 缓存目录
+      # ============================================
+      - name: 📁 Get pnpm store directory
+        shell: bash
+        run: |
+          echo "STORE_PATH=$(pnpm store path --silent)" >> $GITHUB_ENV
+
+      # ============================================
+      # 步骤 5: 设置 pnpm 缓存
+      # ============================================
+      - name: 💾 Setup pnpm cache
+        uses: actions/cache@v3
+        with:
+          path: ${{ env.STORE_PATH }}
+          key: ${{ runner.os }}-pnpm-store-${{ hashFiles('**/pnpm-lock.yaml') }}
+          restore-keys: |
+            ${{ runner.os }}-pnpm-store-
+
+      # ============================================
+      # 步骤 6: 安装依赖
+      # ============================================
+      - name: 📦 Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # ============================================
+      # 步骤 7: 构建项目
+      # ============================================
+      - name: 🔨 Build project
+        run: pnpm build
+        env:
+          NODE_ENV: production
+
+      # ============================================
+      # 步骤 8: 准备部署包
+      # ============================================
+      - name: 📦 Prepare deployment package
+        run: |
+          # 创建部署目录
+          mkdir -p deploy-package
+          
+          # 复制构建产物
+          cp -r dist deploy-package/
+          cp -r server deploy-package/
+          cp package.json deploy-package/
+          cp pnpm-lock.yaml deploy-package/
+          
+          # 创建部署信息文件
+          echo "{
+            \"version\": \"$(date +%Y%m%d%H%M%S)\",
+            \"commit\": \"${{ github.sha }}\",
+            \"branch\": \"${{ github.ref_name }}\",
+            \"deployed_at\": \"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"
+          }" > deploy-package/deploy-info.json
+          
+          # 打包
+          tar -czf deploy-package.tar.gz deploy-package
+
+      # ============================================
+      # 步骤 9: 部署到服务器
+      # ============================================
+      - name: 🚀 Deploy to server
+        uses: appleboy/ssh-action@v1.0.0
+        env:
+          DEPLOY_PACKAGE: deploy-package.tar.gz
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: DEPLOY_PACKAGE
+          script: |
+            set -e
+            
+            # 变量定义
+            APP_DIR="/home/ubuntu/chu-tea"
+            RELEASES_DIR="$APP_DIR/releases"
+            SHARED_DIR="$APP_DIR/shared"
+            RELEASE_NAME=$(date +%Y%m%d%H%M%S)
+            NEW_RELEASE_DIR="$RELEASES_DIR/$RELEASE_NAME"
+            
+            echo "🚀 开始部署版本: $RELEASE_NAME"
+            
+            # 创建新版本目录
+            mkdir -p "$NEW_RELEASE_DIR"
+            
+            echo "📦 等待部署包上传..."
+
+      # ============================================
+      # 步骤 10: 上传部署包
+      # ============================================
+      - name: 📤 Upload deployment package
+        uses: appleboy/scp-action@v0.1.4
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: "deploy-package.tar.gz"
+          target: "/tmp/"
+
+      # ============================================
+      # 步骤 11: 执行部署
+      # ============================================
+      - name: 🔄 Execute deployment
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            set -e
+            
+            # 变量定义
+            APP_DIR="/home/ubuntu/chu-tea"
+            RELEASES_DIR="$APP_DIR/releases"
+            SHARED_DIR="$APP_DIR/shared"
+            RELEASE_NAME=$(date +%Y%m%d%H%M%S)
+            NEW_RELEASE_DIR="$RELEASES_DIR/$RELEASE_NAME"
+            
+            echo "📦 解压部署包..."
+            mkdir -p "$NEW_RELEASE_DIR"
+            tar -xzf /tmp/deploy-package.tar.gz -C /tmp/
+            cp -r /tmp/deploy-package/* "$NEW_RELEASE_DIR/"
+            rm -rf /tmp/deploy-package /tmp/deploy-package.tar.gz
+            
+            echo "🔗 创建共享文件符号链接..."
+            # 链接 .env 文件
+            if [ -f "$SHARED_DIR/.env" ]; then
+                ln -sf "$SHARED_DIR/.env" "$NEW_RELEASE_DIR/.env"
+            fi
+            
+            # 链接日志目录
+            if [ -d "$SHARED_DIR/logs" ]; then
+                ln -sf "$SHARED_DIR/logs" "$NEW_RELEASE_DIR/logs"
+            fi
+            
+            # 链接上传目录
+            if [ -d "$SHARED_DIR/uploads" ]; then
+                ln -sf "$SHARED_DIR/uploads" "$NEW_RELEASE_DIR/uploads"
+            fi
+            
+            echo "📦 安装生产依赖..."
+            cd "$NEW_RELEASE_DIR"
+            pnpm install --prod --frozen-lockfile
+            
+            echo "🔄 切换到新版本..."
+            # 原子性切换符号链接
+            ln -sfn "$NEW_RELEASE_DIR" "$APP_DIR/current"
+            
+            echo "🔄 重载服务..."
+            # 重载 Nginx
+            sudo nginx -s reload
+            
+            # 重载 PM2 (零停机)
+            cd "$APP_DIR"
+            if pm2 list | grep -q "chu-tea-backend"; then
+                pm2 reload ecosystem.config.js --update-env
+            else
+                pm2 start ecosystem.config.js
+            fi
+            pm2 save
+            
+            echo "🧹 清理旧版本 (保留最近5个)..."
+            cd "$RELEASES_DIR"
+            ls -t | tail -n +6 | xargs -r rm -rf
+            
+            echo "✅ 部署完成！"
+            echo "📋 当前版本: $RELEASE_NAME"
+            echo "🔗 符号链接: $(readlink -f $APP_DIR/current)"
+
+      # ============================================
+      # 步骤 12: 健康检查
+      # ============================================
+      - name: 🏥 Health check
+        uses: appleboy/ssh-action@v1.0.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            echo "🏥 执行健康检查..."
+            
+            # 等待服务启动
+            sleep 5
+            
+            # 检查 Nginx
+            if systemctl is-active --quiet nginx; then
+                echo "✅ Nginx 运行正常"
+            else
+                echo "❌ Nginx 未运行"
+                exit 1
+            fi
+            
+            # 检查 PM2
+            if pm2 list | grep -q "online"; then
+                echo "✅ PM2 应用运行正常"
+            else
+                echo "❌ PM2 应用未运行"
+                exit 1
+            fi
+            
+            # 检查 HTTP 响应
+            HTTP_STATUS=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:80 || echo "000")
+            if [ "$HTTP_STATUS" = "200" ]; then
+                echo "✅ HTTP 响应正常 (状态码: $HTTP_STATUS)"
+            else
+                echo "⚠️ HTTP 响应异常 (状态码: $HTTP_STATUS)"
+            fi
+            
+            echo "🎉 部署验证完成！"
+
+      # ============================================
+      # 步骤 13: 部署通知 (可选)
+      # ============================================
+      - name: 📢 Deployment notification
+        if: always()
+        run: |
+          if [ "${{ job.status }}" = "success" ]; then
+            echo "✅ 部署成功！"
+            echo "提交: ${{ github.sha }}"
+            echo "分支: ${{ github.ref_name }}"
+          else
+            echo "❌ 部署失败！"
+            echo "请检查日志获取详细信息"
+          fi
