@@ -20,8 +20,6 @@ jobs:
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
-        with:
-          version: 10
 
       - name: Get pnpm store directory
         shell: bash
@@ -60,16 +58,8 @@ jobs:
           key: ${{ secrets.SSH_PRIVATE_KEY }}
           script: |
             cd /home/ubuntu/chu-tea
-            
-            # Update symlink to new release
             ln -sfn /home/ubuntu/chu-tea/releases/${{ github.sha }} /home/ubuntu/chu-tea/current
-            
-            # Copy environment file
             cp /home/ubuntu/chu-tea/shared/.env /home/ubuntu/chu-tea/current/.env
-            
-            # Restart application
             pm2 reload chu-tea --update-env || pm2 start /home/ubuntu/chu-tea/current/index.js --name chu-tea
-            
-            # Cleanup old releases (keep last 5)
             cd /home/ubuntu/chu-tea/releases
             ls -t | tail -n +6 | xargs -r rm -rf
