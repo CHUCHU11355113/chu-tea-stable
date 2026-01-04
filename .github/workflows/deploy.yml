@@ -62,14 +62,14 @@ jobs:
             pnpm install --prod --frozen-lockfile
             
             # Update symlink to new release
-            ln -sfn /home/ubuntu/chu-tea/releases/${{ github.sha }}/dist /home/ubuntu/chu-tea/current
+            ln -sfn /home/ubuntu/chu-tea/releases/${{ github.sha }} /home/ubuntu/chu-tea/current
             
             # Copy environment file
             cp /home/ubuntu/chu-tea/shared/.env /home/ubuntu/chu-tea/current/.env
             
             # Restart application
             pm2 delete chu-tea || true
-            pm2 start /home/ubuntu/chu-tea/current/index.js --name chu-tea --env production
+            pm2 start /home/ubuntu/chu-tea/current/dist/index.js --name chu-tea --env production
             pm2 save
             
             # Cleanup old releases (keep last 5)
