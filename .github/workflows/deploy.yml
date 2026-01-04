@@ -1,62 +1,54 @@
 name: Deploy to Production
 
-在:
-推送:
-分支:
-      - 主
+on:
+  push:
+    branches:
+      - main
 
-作业:
-部署:
-运行于: ubuntu-latest
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
     
     steps:
-      - name: 检出代码
+      - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: 设置 Node.js
+      - name: Setup Node.js
         uses: actions/setup-node@v4
-与:
+        with:
           node-version: '20'
 
-      - 名称: Setup pnpm
-使用: pnpm/action-setup@v2
-与:
-版本: 8
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v2
+        with:
+          version: 8
 
-      - name: 安装依赖
-运行: pnpm install --frozen-lockfile
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
 
-      - name: 构建
-运行: pnpm 构建
+      - name: Build
+        run: pnpm build
 
-      - 名称: 部署到服务器
-用途: appleboy/scp-action@v0.1.7
-与:
-主机: ${{secrets.SERVER_HOST}}
-用户名: ${{secrets.SERVER_USER}}
-密钥: ${{secrets.SSH_PRIVATE_KEY}}
-源: “dist/*”
-目标: "/home/ubuntu/chu-tea/releases/${{ github.sha }}"
+      - name: Deploy to server
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          source: "dist/*"
+          target: "/home/ubuntu/chu-tea/releases/${{ github.sha }}"
           strip_components: 1
 
-      - 名称: 激活新版本
-使用: appleboy/ssh-action@v1.0.3
-与:
-主机: ${{secrets.SERVER_HOST}}
-用户名: ${{secrets.SERVER_USER}}
-密钥: ${{secrets.SSH_PRIVATE_KEY}}
-脚本: |
+      - name: Activate new release
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.SERVER_HOST }}
+          username: ${{ secrets.SERVER_USER }}
+          key: ${{ secrets.SSH_PRIVATE_KEY }}
+          script: |
             cd /home/ubuntu/chu-tea
-            
-            # 更新符号链接指向新版本
             ln -sfn /home/ubuntu/chu-tea/releases/${{ github.sha }} /home/ubuntu/chu-tea/current
-            
-            # 复制环境变量文件
             cp /home/ubuntu/chu-tea/shared/.env /home/ubuntu/chu-tea/current/.env
-            
-            # 重启应用
-pm2 重载 chu-tea --update-env || pm2 启动 /home/ubuntu/chu-tea/current/index.js --name chu-tea
-            
-            # 清理旧版本（保留最近5个）
+            pm2 reload chu-tea --update-env || pm2 start /home/ubuntu/chu-tea/current/index.js --name chu-tea
             cd /home/ubuntu/chu-tea/releases
             ls -t | tail -n +6 | xargs -r rm -rf
