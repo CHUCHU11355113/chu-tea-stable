@@ -60,6 +60,9 @@ jobs:
             cd /home/ubuntu/chu-tea
             ln -sfn /home/ubuntu/chu-tea/releases/${{ github.sha }}/dist /home/ubuntu/chu-tea/current 
             cp /home/ubuntu/chu-tea/shared/.env /home/ubuntu/chu-tea/current/.env
-            pm2 reload chu-tea --update-env || pm2 start /home/ubuntu/chu-tea/current/index.js --name chu-tea
+            pm2 delete chu-tea || true
+            pm2 start /home/ubuntu/chu-tea/current/index.js --name chu-tea
+            pm2 save
+
             cd /home/ubuntu/chu-tea/releases
             ls -t | tail -n +6 | xargs -r rm -rf
